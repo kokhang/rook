@@ -1,0 +1,42 @@
+apiVersion: extensions/v1beta1
+kind: DaemonSet
+metadata:
+  name: rbd-mapper
+spec:
+  template:
+    metadata:
+      labels:
+        name: rook-operator
+    spec:
+      containers:
+        - image: docker:1.11-dind
+          imagePullPolicy: Always
+          name: rbd-mapper
+          securityContext:
+            privileged: true
+          command:
+            - /bin/sh
+            - -xec
+            - |
+              if [ ! -x /host/rbd ]; then
+                echo '#!/bin/sh' >> /host/rbd;
+                echo 'docker run --rm -v /etc/ceph:/etc/ceph -v /sys:/sys --net=host --privileged=true ceph/base rbd "$@"' >> /host/rbd;
+                chmod +x /host/rbd;
+                docker pull ceph/base;
+                touch remove
+              fi
+              unset sleep
+              trap 'if [ -f remove ]; then echo deleting mapper; rm /host/rbd; fi; kill $sleep; exit' TERM
+              while true; do sleep 3600 & sleep=$!; wait; done
+          volumeMounts:
+            - mountPath: /host
+              name: host-usr-bin
+            - mountPath: /var/run/docker.sock
+              name: host-docker-sock
+      volumes:
+        - name: host-usr-bin
+          hostPath:
+            path: /usr/bin
+        - name: host-docker-sock
+          hostPath:
+            path: /var/run/docker.sock
