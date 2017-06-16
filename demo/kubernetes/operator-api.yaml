@@ -1,0 +1,13 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: rook-operator-api
+  labels:
+    name: rook-operator
+spec:
+  selector:
+    name: rook-operator
+  ports:
+    - protocol: TCP
+      port: 8124
+  type: NodePort

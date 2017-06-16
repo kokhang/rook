@@ -1,0 +1,146 @@
+swagger: "2.0"
+info:
+  title: Rook
+  description: Rook API Spec
+  version: 1.0.0
+consumes:
+- application/json
+- application/yaml
+produces:
+- application/json
+- application/yaml
+schemes:
+- http
+paths:
+  /hello:
+      get:
+        produces:
+          - text/plain
+        parameters:
+          - name: name
+            required: false
+            type: string
+            in: query
+            description: defaults to World if not given
+        operationId: getGreeting
+        responses:
+          200:
+            description: returns a greeting
+            schema:
+                type: string
+                description: contains the actual greeting as plain text Contact GitHub API Training Shop Blog About
+  /v1/clusters/{clusterID}/pools/{poolID}/volumes/{volumeID}/attachments:
+    get:
+      operationId: listVolumeAttachment
+      responses:
+        200:
+          description: list of all attachments for the volume.
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/attachment"
+        default:
+          description: generic error response
+          schema:
+            $ref: "#/definitions/error"
+    post:
+      operationId: createVolumeAttachment
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            $ref: "#/definitions/attachment"
+      responses:
+        200:
+          description: Created
+          schema:
+            $ref: "#/definitions/attachment"
+        default:
+          description: error
+          schema:
+            $ref: "#/definitions/error"
+    parameters:
+        - name: clusterID
+          in: path
+          type: string
+          required: true
+        - name: poolID
+          in: path
+          type: string
+          required: true
+        - name: volumeID
+          in: path
+          type: string
+          required: true
+  /v1/clusters/{clusterID}/pools/{poolID}/volumes/{volumeID}/attachments/{attachmentID}:
+    get:
+      operationId: getVolumeAttachment
+      responses:
+        200:
+          description: OK
+          schema:
+            $ref: "#/definitions/attachment"
+        default:
+          description: error
+          schema:
+            $ref: "#/definitions/error"
+    delete:
+      operationId: deleteVolumeAttachment
+      responses:
+        204:
+          description: Deleted
+        default:
+          description: error
+          schema:
+            $ref: "#/definitions/error"
+    parameters:
+        - name: clusterID
+          in: path
+          type: string
+          required: true
+        - name: poolID
+          in: path
+          type: string
+          required: true
+        - name: volumeID
+          in: path
+          type: string
+          required: true
+        - name: attachmentID
+          in: path
+          type: string
+          required: true
+definitions:
+  attachment:
+    type: object
+    required:
+      - node
+    properties:
+      id:
+        type: integer
+        format: int64
+        readOnly: true
+        description: unique identifier for the attachment
+      node:
+        type: string
+        minLength: 1
+        description: The node where the volume is attached
+      devicePath:
+        type: string
+        description: The device path on the host where the volume is attached
+      mountOptions:
+        type: string
+        description: Options needed to mount the volume
+      status:
+        type: string
+  error:
+    type: object
+    required:
+      - message
+    properties:
+      code:
+        type: integer
+        format: int64
+      message:
+        type: string

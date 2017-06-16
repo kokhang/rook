@@ -66,7 +66,7 @@ func (m *clusterManager) Description() string {
 	return "Managed Rook clusters"
 }
 
-func (m *clusterManager) Manage() {
+func (m *clusterManager) Manage(errChan chan error) {
 	for {
 		logger.Infof("Managing clusters")
 		err := m.Load()

@@ -22,6 +22,14 @@ import:
 - package: github.com/go-ini/ini
 - package: github.com/ghodss/yaml
 - package: github.com/gorilla/mux
+- package: github.com/go-openapi/analysis
+  version: b44dc874b601d9e4e2f6e19140e794ba24bead3b
+- package: github.com/go-openapi/runtime
+  version: 11e322eeecc1032d5a0a96c566ed53f2b5c26e22
+- package: github.com/go-openapi/validate
+  version: deaf2c9013bc1a7f4c774662259a506ba874d80f
+- package: github.com/go-openapi/loads
+  version: 18441dfa706d924a39a030ee2c3b1d8d81917b38
 - package: bitbucket.org/ww/goautoneg
   version: a547fc61f48d567d5b4ec6f8aee5573d8efce11d
   repo: https://github.com/quantum/goautoneg.git
@@ -29,7 +37,7 @@ import:
 - package: github.com/kubernetes-incubator/external-storage
   version: v2.1.0
 - package: k8s.io/client-go
-  version: 76153773eaa3a268131d3d993290a194a1370585
+  version: 7615377
 - package: k8s.io/apimachinery
   version: c1c4a7fe832857c75cc1d79c8e40d71d5da15fc6
 - package: github.com/bassam/cgosymbolizer

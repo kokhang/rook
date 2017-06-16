@@ -88,6 +88,8 @@ GLIDE_VERSION=v0.12.3
 GLIDE_HOME := $(abspath $(GO_WORK_DIR)/glide)
 GLIDE := $(GO_TOOLS_HOST_DIR)/glide-$(GLIDE_VERSION)
 GOLINT := $(GO_TOOLS_HOST_DIR)/golint
+SWAGGER_VERSION=0.6.0
+SWAGGER := $(GO_TOOLS_HOST_DIR)/swagger_$(GOHOSTOS)_$(GOHOSTARCH)
 export GLIDE_HOME
 
 GO := go
@@ -186,6 +188,10 @@ go.vendor $(GO_VENDOR_DIR)/vendor.stamp: $(GLIDE)
 	@$(GLIDE) install --strip-vendor
 	@touch $(GO_VENDOR_DIR)/vendor.stamp
 
+.PHONY: go.swagger
+go.swagger: $(SWAGGER)
+	@$(SWAGGER) generate server -t pkg/api/gen -f pkg/api/swagger.yml --exclude-main
+
 $(GLIDE):
 	@echo "installing glide"
 	@mkdir -p $(GO_TOOLS_HOST_DIR)/tmp
@@ -198,6 +204,12 @@ $(GOLINT):
 	@mkdir -p $(GO_TOOLS_HOST_DIR)/tmp
 	@GOPATH=$(GO_TOOLS_HOST_DIR)/tmp GOBIN=$(GO_TOOLS_HOST_DIR) $(GOHOST) get github.com/golang/lint/golint
 	@rm -fr $(GO_TOOLS_HOST_DIR)/tmp
+
+$(SWAGGER):
+	@echo "installing swagger"
+	@mkdir -p $(GO_TOOLS_HOST_DIR)
+	@curl -o $(GO_TOOLS_HOST_DIR)/swagger_$(GOHOSTOS)_$(GOHOSTARCH) -L'#' https://github.com/go-swagger/go-swagger/releases/download/$(SWAGGER_VERSION)/swagger_$(GOHOSTOS)_$(GOHOSTARCH)
+	@chmod +x $(GO_TOOLS_HOST_DIR)/swagger_$(GOHOSTOS)_$(GOHOSTARCH)
 
 .PHONY: go.clean
 go.clean: ;

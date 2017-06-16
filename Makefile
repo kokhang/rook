@@ -216,6 +216,8 @@ fmt:
 
 vendor: go.vendor
 
+swagger: go.swagger
+
 clean: go.clean external.clean
 	@rm -fr $(WORKDIR) $(RELEASE_DIR)/* $(BIN_DIR)/*
 
@@ -257,7 +259,7 @@ publish.cleanup:
 	@$(MAKE) release.cleanup
 
 .PHONY: build.common cross.build cross.parallel
-.PHONY: dev build install test check vet fmt vendor clean distclean cross release publish
+.PHONY: dev swagger build install test check vet fmt vendor clean distclean cross release publish
 
 # ====================================================================================
 # Help
@@ -279,6 +281,7 @@ help:
 	@echo '    fmt         Check formatting of go sources.'
 	@echo '    lint        Check syntax and styling of go sources.'
 	@echo '    help        Show this help info.'
+	@echo '    swagger     Runs swagger API code generator.'
 	@echo '    vendor      Installs vendor dependencies.'
 	@echo '    vet         Runs lint checks on go sources.'
 	@echo ''

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/kubernetes-incubator/external-storage/lib/controller"
+	rookapi "github.com/rook/rook/pkg/api"
 	"github.com/rook/rook/pkg/cephmgr/client"
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -96,6 +97,8 @@ func (o *Operator) Run() error {
 		<-time.After(initRetryDelay)
 	}
 
+	errCh := make(chan error, 1)
+
 	// Run volume provisioner
 	// The controller needs to know what the server version is because out-of-tree
 	// provisioners aren't officially supported until 1.5
@@ -117,9 +120,13 @@ func (o *Operator) Run() error {
 		termLimit)
 	go pc.Run(wait.NeverStop)
 
+	// Start the Operator API
+	go rookapi.Start(errCh)
+
 	// watch for changes to the rook clusters
-	o.clusterMgr.Manage()
-	return nil
+	go o.clusterMgr.Manage(errCh)
+
+	return <-errCh
 }
 
 func (o *Operator) initResources() error {
