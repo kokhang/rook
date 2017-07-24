@@ -20,10 +20,11 @@ import (
 	"errors"
 
 	"fmt"
+	"time"
+
 	"github.com/rook/rook/pkg/model"
 	"github.com/rook/rook/tests/framework/utils"
 	"github.com/stretchr/testify/require"
-	"time"
 )
 
 var (
@@ -40,8 +41,6 @@ var (
 //Delete user
 func (suite *SmokeSuite) TestObjectStorage_SmokeTest() {
 	defer suite.objectTestDataCleanUp()
-	oc := suite.helper.GetObjectClient()
-
 	logger.Infof("Object Storage Smoke Test - Create Object Store, User,Bucket and read/write to bucket")
 
 	logger.Infof("Step 0 : Create Object Store")
