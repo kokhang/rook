@@ -21,6 +21,7 @@ import (
 	"path"
 	"strings"
 	"testing"
+	"time"
 
 	"os"
 
@@ -29,7 +30,6 @@ import (
 	cephtest "github.com/rook/rook/pkg/ceph/test"
 	"github.com/rook/rook/pkg/clusterd"
 	"github.com/rook/rook/pkg/operator/k8sutil"
-	"github.com/rook/rook/pkg/operator/kit"
 	"github.com/rook/rook/pkg/operator/test"
 	exectest "github.com/rook/rook/pkg/util/exec/test"
 	"github.com/stretchr/testify/assert"
@@ -51,11 +51,21 @@ func TestStartMonPods(t *testing.T) {
 		},
 	}
 	context := &clusterd.Context{
-		KubeContext: kit.KubeContext{Clientset: clientset, MaxRetries: 1},
-		Executor:    executor,
-		ConfigDir:   configDir,
+		Clientset: clientset,
+		Executor:  executor,
+		ConfigDir: configDir,
 	}
-	c := New(context, namespace, "", "myversion", k8sutil.Placement{})
+	c := &Cluster{
+		context:             context,
+		dataDirHostPath:     "",
+		Namespace:           namespace,
+		Version:             "myversion",
+		Size:                3,
+		maxMonID:            -1,
+		waitForStart:        true,
+		monPodRetryInterval: 1 * time.Second,
+		monPodTimeout:       1 * time.Second,
+	}
 
 	// start a basic cluster
 	// an error is expected since mocking always creates pods that are not running
@@ -91,7 +101,7 @@ func TestSaveMonEndpoints(t *testing.T) {
 	clientset := test.New(1)
 	configDir, _ := ioutil.TempDir("", "")
 	defer os.RemoveAll(configDir)
-	c := New(&clusterd.Context{KubeContext: kit.KubeContext{Clientset: clientset}, ConfigDir: configDir}, "ns", "", "myversion", k8sutil.Placement{})
+	c := New(&clusterd.Context{Clientset: clientset, ConfigDir: configDir}, "ns", "", "myversion", k8sutil.Placement{})
 	c.clusterInfo = test.CreateClusterInfo(1)
 
 	// create the initial config map
@@ -122,16 +132,16 @@ func TestCheckHealth(t *testing.T) {
 	configDir, _ := ioutil.TempDir("", "")
 	defer os.RemoveAll(configDir)
 	context := &clusterd.Context{
-		KubeContext: kit.KubeContext{Clientset: clientset, RetryDelay: 1, MaxRetries: 1},
-		ConfigDir:   configDir,
-		Executor:    executor,
+		Clientset: clientset,
+		ConfigDir: configDir,
+		Executor:  executor,
 	}
 	c := New(context, "ns", "", "myversion", k8sutil.Placement{})
 	c.clusterInfo = test.CreateClusterInfo(1)
 	c.waitForStart = false
 	defer os.RemoveAll(c.context.ConfigDir)
 
-	err := c.CheckHealth()
+	err := c.checkHealth()
 	assert.Nil(t, err)
 
 	c.maxMonID = 10
@@ -183,7 +193,7 @@ func TestMonID(t *testing.T) {
 
 func TestAvailableMonNodes(t *testing.T) {
 	clientset := test.New(1)
-	c := New(&clusterd.Context{KubeContext: kit.KubeContext{Clientset: clientset}}, "ns", "", "myversion", k8sutil.Placement{})
+	c := New(&clusterd.Context{Clientset: clientset}, "ns", "", "myversion", k8sutil.Placement{})
 	c.clusterInfo = test.CreateClusterInfo(0)
 	nodes, err := c.getAvailableMonNodes()
 	assert.Nil(t, err)
@@ -200,7 +210,7 @@ func TestAvailableMonNodes(t *testing.T) {
 
 func TestAvailableNodesInUse(t *testing.T) {
 	clientset := test.New(3)
-	c := New(&clusterd.Context{KubeContext: kit.KubeContext{Clientset: clientset}}, "ns", "", "myversion", k8sutil.Placement{})
+	c := New(&clusterd.Context{Clientset: clientset}, "ns", "", "myversion", k8sutil.Placement{})
 	c.clusterInfo = test.CreateClusterInfo(0)
 
 	// all three nodes are available by default
@@ -231,7 +241,7 @@ func TestAvailableNodesInUse(t *testing.T) {
 
 func TestTaintedNodes(t *testing.T) {
 	clientset := test.New(3)
-	c := New(&clusterd.Context{KubeContext: kit.KubeContext{Clientset: clientset}}, "ns", "", "myversion", k8sutil.Placement{})
+	c := New(&clusterd.Context{Clientset: clientset}, "ns", "", "myversion", k8sutil.Placement{})
 	c.clusterInfo = test.CreateClusterInfo(0)
 
 	nodes, err := c.getAvailableMonNodes()
@@ -264,7 +274,7 @@ func TestTaintedNodes(t *testing.T) {
 
 func TestNodeAffinity(t *testing.T) {
 	clientset := test.New(3)
-	c := New(&clusterd.Context{KubeContext: kit.KubeContext{Clientset: clientset}}, "ns", "", "myversion", k8sutil.Placement{})
+	c := New(&clusterd.Context{Clientset: clientset}, "ns", "", "myversion", k8sutil.Placement{})
 	c.clusterInfo = test.CreateClusterInfo(0)
 
 	nodes, err := c.getAvailableMonNodes()

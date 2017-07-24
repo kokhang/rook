@@ -21,7 +21,6 @@ import (
 
 	"github.com/rook/rook/pkg/operator"
 	"github.com/rook/rook/pkg/operator/k8sutil"
-	"github.com/rook/rook/pkg/operator/kit"
 	"github.com/rook/rook/pkg/util/flags"
 	"github.com/spf13/cobra"
 	"k8s.io/client-go/kubernetes"
@@ -45,7 +44,7 @@ func startOperator(cmd *cobra.Command, args []string) error {
 
 	setLogLevel()
 
-	host, clientset, err := getClientset()
+	clientset, err := getClientset()
 	if err != nil {
 		fmt.Printf("failed to get k8s client. %+v", err)
 		os.Exit(1)
@@ -54,14 +53,13 @@ func startOperator(cmd *cobra.Command, args []string) error {
 	logger.Infof("starting operator")
 	context := createContext()
 	context.ConfigDir = k8sutil.DataDir
-	context.KubeContext = kit.KubeContext{
-		MasterHost: host,
-		Clientset:  clientset,
-		RetryDelay: 6,
-		MaxRetries: 15,
-	}
+	context.Clientset = clientset
 
 	op := operator.New(context)
+	if op == nil {
+		fmt.Printf("failed to create operator.")
+		os.Exit(1)
+	}
 	err = op.Run()
 	if err != nil {
 		fmt.Printf("failed to run operator. %+v\n", err)
@@ -71,13 +69,13 @@ func startOperator(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func getClientset() (string, *kubernetes.Clientset, error) {
+func getClientset() (*kubernetes.Clientset, error) {
 	// create the k8s client
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to get k8s config. %+v", err)
+		return nil, fmt.Errorf("failed to get k8s config. %+v", err)
 	}
 
 	c, err := kubernetes.NewForConfig(config)
-	return config.Host, c, err
+	return c, err
 }

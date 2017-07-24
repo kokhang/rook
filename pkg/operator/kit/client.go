@@ -21,30 +21,48 @@ which also has the apache 2.0 license.
 package kit
 
 import (
+	"fmt"
+
+	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
-	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 )
 
-// NewHTTPClient creates a new http client for the operator to manage the Kubernetes cluster
-func NewHTTPClient(group string) (*rest.RESTClient, error) {
+// NewHTTPClient creates a Kubernetes client to interact with API extensions for Custom Resources
+func NewHTTPClient(group, version string, schemeBuilder runtime.SchemeBuilder) (*rest.RESTClient, *runtime.Scheme, error) {
+	scheme := runtime.NewScheme()
+	if err := schemeBuilder.AddToScheme(scheme); err != nil {
+		return nil, nil, err
+	}
+
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	config.GroupVersion = &schema.GroupVersion{
-		Group: group,
-	}
+	config.GroupVersion = &schema.GroupVersion{Group: group, Version: version}
+
 	config.APIPath = "/apis"
 	config.ContentType = runtime.ContentTypeJSON
-	config.NegotiatedSerializer = serializer.DirectCodecFactory{CodecFactory: scheme.Codecs}
+	config.NegotiatedSerializer = serializer.DirectCodecFactory{CodecFactory: serializer.NewCodecFactory(scheme)}
 
-	restcli, err := rest.RESTClientFor(config)
+	client, err := rest.RESTClientFor(config)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return restcli, nil
+
+	return client, scheme, nil
+}
+
+func getApiextensionsClientset() (apiextensionsclient.Interface, error) {
+	// create the k8s client
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get k8s config. %+v", err)
+	}
+
+	c, err := apiextensionsclient.NewForConfig(config)
+	return c, err
 }

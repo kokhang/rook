@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"k8s.io/api/core/v1"
+	apiextensionsclientfake "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/fake"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
@@ -34,4 +35,8 @@ func New(nodes int) *fake.Clientset {
 		clientset.CoreV1().Nodes().Create(n)
 	}
 	return clientset
+}
+
+func NewApiextensionsClient() *apiextensionsclientfake.Clientset {
+	return apiextensionsclientfake.NewSimpleClientset()
 }
