@@ -403,6 +403,24 @@ func (k8sh *K8sHelper) IsThirdPartyResourcePresent(tprname string) bool {
 	return false
 }
 
+//IsCRDPresent returns true if custom resource definition is present
+func (k8sh *K8sHelper) IsCRDPresent(tprname string) bool {
+
+	cmdArgs := []string{"get", "crd", tprname}
+	inc := 0
+	for inc < 20 {
+		_, _, exitCode := ExecuteCmd("kubectl", cmdArgs)
+		if exitCode == 0 {
+			k8slogger.Infof("Found the CRD resource: " + tprname)
+			return true
+		}
+		time.Sleep(5 * time.Second)
+		inc++
+	}
+
+	return false
+}
+
 //GetPodDetails returns details about a  pod
 func (k8sh *K8sHelper) GetPodDetails(podNamePattern string, namespace string) (string, error) {
 	cmdArgs := []string{"get", "pods", "-l", "app=" + podNamePattern, "-o", "wide", "--no-headers=true", "-o", "name"}

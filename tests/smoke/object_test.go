@@ -37,7 +37,7 @@ var (
 //Create object store, Create User, Connect to Object Store, Create Bucket, Read/Write/Delete to bucket,Delete Bucket and
 //Delete user
 func (suite *SmokeSuite) TestObjectStorage_SmokeTest() {
-	defer suite.blockTestDataCleanUp()
+	defer suite.objectTestDataCleanUp()
 	logger.Infof("Object Storage Smoke Test - Create Object Store, User,Bucket and read/write to bucket")
 
 	logger.Infof("Step 0 : Create Object Store")
