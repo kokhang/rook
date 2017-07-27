@@ -18,7 +18,6 @@ package installer
 
 import (
 	"fmt"
-	"path"
 	"time"
 
 	"k8s.io/client-go/kubernetes"
@@ -166,22 +165,19 @@ func (h *InstallHelper) UninstallRookFromK8s() {
 	if skipRookInstall {
 		return
 	}
-	k8sversion := h.k8shelper.GetK8sServerVersion()
+	k8sVersion := h.k8shelper.GetK8sServerVersion()
+	serverVersion, err := h.k8shelper.Clientset.Discovery().ServerVersion()
+	if err != nil {
+		panic(err)
+	}
+	kubeVersion := utilversion.MustParseSemantic(serverVersion.GitVersion)
 
 	logger.Infof("Uninstalling Rook")
 	k8sHelp, err := utils.CreatK8sHelper()
 	if err != nil {
 		panic(err)
 	}
-
-	serverVersion, err := k8sHelp.Clientset.Discovery().ServerVersion()
-	if err != nil {
-		panic(err)
-	}
-	kubeVersion := utilversion.MustParseSemantic(serverVersion.GitVersion)
-
-	_, err = k8sHelp.ResourceOperation("delete", path.Join(getPodSpecPath(h.Env.K8sVersion), rookOperatorFileName))
-	rookOperator := h.installData.getRookOperator(k8sversion)
+	rookOperator := h.installData.getRookOperator(k8sVersion)
 
 	_, err = h.k8shelper.KubectlWithStdin(rookOperator, deleteArgs...)
 	if err != nil {
