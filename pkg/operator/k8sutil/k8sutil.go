@@ -62,6 +62,8 @@ const (
 	NodeNameEnvVar = "NODE_NAME"
 	// RookOperatorServiceAccount is the env variable for getting the rook-operator service account via downward api
 	RookOperatorServiceAccount = "ROOK_OPERATOR_SERVICE_ACCOUNT"
+	// KubeletRootDirPathDirEnv is the env variable for getting the kubelet root directory
+	KubeletRootDirPathDirEnv = "KUBELET_ROOT_DIR_PATH"
 )
 
 // GetK8SVersion gets the version of the running K8S cluster

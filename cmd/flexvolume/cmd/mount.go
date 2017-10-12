@@ -19,7 +19,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/rook/rook/pkg/agent/flexvolume"
 	"github.com/spf13/cobra"
@@ -50,100 +49,10 @@ func mount(cmd *cobra.Command, args []string) error {
 	}
 	opts.MountDir = args[0]
 
-	err = client.Call("FlexvolumeController.GetAttachInfoFromMountDir", opts.MountDir, &opts)
+	// Call agent to perform mount operation
+	err = client.Call("FlexvolumeController.Mount", opts, nil)
 	if err != nil {
-		log(client, fmt.Sprintf("Attach volume %s/%s failed: %v", opts.Pool, opts.Image, err), true)
 		return fmt.Errorf("Rook: Mount volume failed: %v", err)
 	}
-
-	// Attach volume to node
-	log(client, fmt.Sprintf("calling agent to attach volume %s/%s", opts.Pool, opts.Image), false)
-	var devicePath string
-	err = client.Call("FlexvolumeController.Attach", opts, &devicePath)
-	if err != nil {
-		log(client, fmt.Sprintf("Attach volume %s/%s failed: %v", opts.Pool, opts.Image, err), true)
-		return fmt.Errorf("Rook: Mount volume failed: %v", err)
-	}
-
-	mounter := getMounter()
-
-	// Mount the volume to a global volume path
-	var globalVolumeMountPath string
-	err = client.Call("FlexvolumeController.GetGlobalMountPath", opts.VolumeName, &globalVolumeMountPath)
-	if err != nil {
-		log(client, fmt.Sprintf("Attach volume %s/%s failed. Cannot get global volume mount path: %v", opts.Pool, opts.Image, err), true)
-		return fmt.Errorf("Rook: Mount volume failed. Cannot get global volume mount path: %v", err)
-	}
-	notMnt, err := mounter.Interface.IsLikelyNotMountPoint(globalVolumeMountPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			if err := os.MkdirAll(globalVolumeMountPath, 0750); err != nil {
-				return fmt.Errorf("Rook: Mount volume failed. Cannot create global volume mount path dir: %v", err)
-			}
-			notMnt = true
-		} else {
-			return fmt.Errorf("Rook: Mount volume failed. Error checking if %s is a mount point: %v", globalVolumeMountPath, err)
-		}
-	}
-	options := []string{opts.RW}
-	if notMnt {
-		err = redirectStdout(
-			client,
-			func() error {
-				if err = mounter.FormatAndMount(devicePath, globalVolumeMountPath, opts.FsType, options); err != nil {
-					return fmt.Errorf("failed to mount volume %s [%s] to %s, error %v", devicePath, opts.FsType, globalVolumeMountPath, err)
-				}
-				return nil
-			},
-		)
-		if err != nil {
-			log(client, fmt.Sprintf("mount volume %s/%s failed: %v", opts.Pool, opts.Image, err), true)
-			os.Remove(globalVolumeMountPath)
-			return err
-		}
-		log(client,
-			"Ignore error about Mount failed: exit status 32. Kubernetes does this to check whether the volume has been formatted. It will format and retry again. https://github.com/kubernetes/kubernetes/blob/release-1.7/pkg/util/mount/mount_linux.go#L360",
-			false)
-		log(client, fmt.Sprintf("formatting volume %v devicePath %v deviceMountPath %v fs %v with options %+v", opts.VolumeName, devicePath, globalVolumeMountPath, opts.FsType, options), false)
-	}
-
-	// Mount the global mount path to pod mount dir
-	log(client, fmt.Sprintf("mounting global mount path %s on %s", globalVolumeMountPath, opts.MountDir), false)
-	// Perform a bind mount to the full path to allow duplicate mounts of the same volume. This is only supported for RO attachments.
-	options = append(options, "bind")
-	err = redirectStdout(
-		client,
-		func() error {
-			err := mounter.Interface.Mount(globalVolumeMountPath, opts.MountDir, "", options)
-			if err != nil {
-				notMnt, mntErr := mounter.Interface.IsLikelyNotMountPoint(opts.MountDir)
-				if mntErr != nil {
-					return fmt.Errorf("IsLikelyNotMountPoint check failed: %v", mntErr)
-				}
-				if !notMnt {
-					if mntErr = mounter.Interface.Unmount(opts.MountDir); mntErr != nil {
-						return fmt.Errorf("Failed to unmount: %v", mntErr)
-					}
-					notMnt, mntErr := mounter.Interface.IsLikelyNotMountPoint(opts.MountDir)
-					if mntErr != nil {
-						return fmt.Errorf("IsLikelyNotMountPoint check failed: %v", mntErr)
-					}
-					if !notMnt {
-						// This is very odd, we don't expect it.  We'll try again next sync loop.
-						return fmt.Errorf("%s is still mounted, despite call to unmount().  Will try again next sync loop", opts.MountDir)
-					}
-				}
-				os.Remove(opts.MountDir)
-				return fmt.Errorf("failed to mount volume %s to %s, error %v", globalVolumeMountPath, opts.MountDir, err)
-			}
-			return nil
-		},
-	)
-	if err != nil {
-		log(client, fmt.Sprintf("mount volume %s/%s failed: %v", opts.Pool, opts.Image, err), true)
-		return err
-	}
-
-	log(client, fmt.Sprintf("volume %s/%s has been attached and mounted", opts.Pool, opts.Image), false)
 	return nil
 }

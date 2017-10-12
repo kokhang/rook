@@ -26,6 +26,7 @@ import (
 	"os"
 
 	"github.com/coreos/pkg/capnslog"
+
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	"k8s.io/api/core/v1"
 	extensions "k8s.io/api/extensions/v1beta1"
@@ -36,6 +37,7 @@ import (
 
 const (
 	agentDaemonsetName       = "rook-agent"
+	kubeletDefaultRootDir    = "/var/lib/kubelet"
 	flexvolumePathDirEnv     = "FLEXVOLUME_DIR_PATH"
 	flexvolumeDefaultDirPath = "/usr/libexec/kubernetes/kubelet-plugins/volume/exec/"
 )
@@ -68,6 +70,9 @@ func (a *Agent) createAgentDaemonSet(namespace string) error {
 		return err
 	}
 	privileged := true
+
+	kubeletRootDir := a.getKubeletRootDir()
+
 	ds := &extensions.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: agentDaemonsetName,
@@ -114,10 +119,18 @@ func (a *Agent) createAgentDaemonSet(namespace string) error {
 									Name:      "modinfo",
 									MountPath: "/usr/sbin/modinfo",
 								},
+								{
+									Name:      "kubeletrootdir",
+									MountPath: kubeletRootDir,
+								},
 							},
 							Env: []v1.EnvVar{
 								k8sutil.NamespaceEnvVar(),
 								k8sutil.NodeEnvVar(),
+								{
+									Name:  k8sutil.KubeletRootDirPathDirEnv,
+									Value: kubeletRootDir,
+								},
 							},
 						},
 					},
@@ -167,6 +180,14 @@ func (a *Agent) createAgentDaemonSet(namespace string) error {
 							VolumeSource: v1.VolumeSource{
 								HostPath: &v1.HostPathVolumeSource{
 									Path: "/sbin/modinfo",
+								},
+							},
+						},
+						{
+							Name: "kubeletrootdir",
+							VolumeSource: v1.VolumeSource{
+								HostPath: &v1.HostPathVolumeSource{
+									Path: kubeletRootDir,
 								},
 							},
 						},
@@ -239,6 +260,33 @@ func (a *Agent) discoverFlexvolumeDir() string {
 
 	logger.Infof("using flexvolume dir path: %s", flexvolumeDirPath)
 	return flexvolumeDirPath
+}
+
+// getKubeletRootDir queries the kubelet configuration to find the kubelet root dir. Defaults to /var/lib/kubelet
+func (a *Agent) getKubeletRootDir() string {
+	nodeConfigURI, err := k8sutil.NodeConfigURI()
+	if err != nil {
+		logger.Warningf(err.Error())
+		return kubeletDefaultRootDir
+	}
+
+	// determining where the path of the kubelet root dir and flexvolume dir on the node
+	nodeConfig, err := a.clientset.Core().RESTClient().Get().RequestURI(nodeConfigURI).DoRaw()
+	if err != nil {
+		logger.Warningf("unable to query node configuration: %v", err)
+		return kubeletDefaultRootDir
+	}
+	configKubelet := NodeConfigKubelet{}
+	if err := json.Unmarshal(nodeConfig, &configKubelet); err != nil {
+		logger.Warningf("unable to parse node config from Kubelet: %+v", err)
+		return kubeletDefaultRootDir
+	}
+
+	if configKubelet.ComponentConfig.RootDirectory == "" {
+		logger.Warning("unable to get kubelet root dir from node config. Root dir is empty")
+		return kubeletDefaultRootDir
+	}
+	return configKubelet.ComponentConfig.RootDirectory
 }
 
 func getDefaultFlexvolumeDir() string {

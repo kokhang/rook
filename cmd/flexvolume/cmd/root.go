@@ -16,16 +16,11 @@ limitations under the License.
 package cmd
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"net"
 	"net/rpc"
 	"os"
 	"path"
-
-	"k8s.io/kubernetes/pkg/util/exec"
-	k8smount "k8s.io/kubernetes/pkg/util/mount"
 
 	"github.com/rook/rook/pkg/agent/flexvolume"
 	"github.com/spf13/cobra"
@@ -60,44 +55,4 @@ func getRPCClient() (*rpc.Client, error) {
 		return nil, fmt.Errorf("error connecting to socket %s: %+v", unixSocketFile, err)
 	}
 	return rpc.NewClient(conn), nil
-}
-
-func getMounter() *k8smount.SafeFormatAndMount {
-	return &k8smount.SafeFormatAndMount{
-		Interface: k8smount.New("" /* default mount path */),
-		Runner:    exec.New(),
-	}
-}
-
-func log(client *rpc.Client, message string, isError bool) {
-	var log = &flexvolume.LogMessage{
-		Message: message,
-		IsError: isError,
-	}
-	client.Call("FlexvolumeController.Log", log, nil)
-}
-
-// redirectStdout redirects the stdout for the fn function to the driver logger
-func redirectStdout(client *rpc.Client, fn func() error) error {
-	// keep backup of the real stdout and stderr
-	oldStdout := os.Stdout
-	oldStderr := os.Stderr
-
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-	os.Stderr = w
-
-	// restoring the real stdout and stderr
-	defer func() {
-		os.Stdout = oldStdout
-		os.Stderr = oldStderr
-	}()
-
-	err := fn()
-	w.Close()
-
-	var buf bytes.Buffer
-	io.Copy(&buf, r)
-	log(client, buf.String(), false)
-	return err
 }

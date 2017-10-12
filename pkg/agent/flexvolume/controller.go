@@ -21,17 +21,14 @@ which also has the apache 2.0 license.
 package flexvolume
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 
-	"github.com/coreos/pkg/capnslog"
 	"github.com/rook/rook/pkg/agent/flexvolume/crd"
 	"github.com/rook/rook/pkg/clusterd"
-	"github.com/rook/rook/pkg/operator/agent"
 	"github.com/rook/rook/pkg/operator/cluster"
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	"k8s.io/api/core/v1"
@@ -41,24 +38,25 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/kubernetes/pkg/util/exec"
+	k8smount "k8s.io/kubernetes/pkg/util/mount"
 	"k8s.io/kubernetes/pkg/util/version"
+	"k8s.io/kubernetes/pkg/volume/util"
 )
 
 const (
-	StorageClassKey       = "storageClass"
-	PoolKey               = "pool"
-	ImageKey              = "image"
-	kubeletDefaultRootDir = "/var/lib/kubelet"
-	serverVersionV170     = "v1.7.0"
+	StorageClassKey   = "storageClass"
+	PoolKey           = "pool"
+	ImageKey          = "image"
+	serverVersionV170 = "v1.7.0"
 )
-
-var driverLogger = capnslog.NewPackageLogger("github.com/rook/rook", "rook-flexdriver")
 
 // FlexvolumeController handles all events from the Flexvolume driver
 type FlexvolumeController struct {
 	clientset                  kubernetes.Interface
 	volumeManager              VolumeManager
 	volumeAttachmentController crd.VolumeAttachmentController
+	mounter                    *k8smount.SafeFormatAndMount
 }
 
 func newFlexvolumeController(context *clusterd.Context, volumeAttachmentCRDClient rest.Interface, manager VolumeManager) (*FlexvolumeController, error) {
@@ -76,16 +74,87 @@ func newFlexvolumeController(context *clusterd.Context, volumeAttachmentCRDClien
 		controller = crd.NewTPR(context.Clientset)
 	}
 
+	mounter := &k8smount.SafeFormatAndMount{
+		Interface: k8smount.New("" /* default mount path */),
+		Runner:    exec.New(),
+	}
+
 	return &FlexvolumeController{
 		clientset:                  context.Clientset,
 		volumeManager:              manager,
 		volumeAttachmentController: controller,
+		mounter:                    mounter,
 	}, nil
 }
 
-// Attach attaches rook volume to the node
-func (c *FlexvolumeController) Attach(attachOpts AttachOptions, devicePath *string) error {
+// Mount implements the flexvolume Mount(). It attaches and mount a rook volume to the node
+func (c *FlexvolumeController) Mount(attachOpts AttachOptions, _ *struct{} /* void reply */) error {
 
+	logger.Debug("Performing Mount operation with args: %+v", attachOpts)
+
+	// Get extra attach information from mountDir
+	c.getAttachInfoFromMountDir(&attachOpts)
+
+	// Attach volume to node
+	devicePath, err := c.attach(attachOpts)
+	if err != nil {
+		return err
+	}
+
+	// Mount devicePath to global mount path
+	err = c.mountDevice(attachOpts, devicePath)
+	if err != nil {
+		return err
+	}
+
+	// Mount global mount path to pod mountDir on host
+	err = c.mount(attachOpts)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Unmount implements the flexvolume Unmount(). It unmounts and detaches a rook volume from the node
+func (c *FlexvolumeController) Unmount(detachOpts AttachOptions, _ *struct{} /* void reply */) error {
+
+	logger.Debug("Performing Unmount operation with args: %+v", detachOpts)
+
+	// Get extra detach information from mountDir
+	c.getAttachInfoFromMountDir(&detachOpts)
+
+	// Get list of path of all other references to the device referenced by mountDir
+	refs, err := k8smount.GetMountRefs(c.mounter.Interface, detachOpts.MountDir)
+	if err != nil {
+		return fmt.Errorf("failed to get reference mount %s: %+v", detachOpts.MountDir, err)
+	}
+
+	// Unmount volume from mountDir
+	err = c.unmount(detachOpts)
+	if err != nil {
+		return err
+	}
+
+	// If len(refs) is 1, then all bind mounts have been removed, and the
+	// remaining reference is the global mount. It is safe to detach.
+	if len(refs) == 1 {
+		// Unmount global mount dir
+		if err := c.unmountDevice(detachOpts); err != nil {
+			return err
+		}
+		// Detach volume from node
+		if err := c.detach(detachOpts); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Attach attaches rook volume to the node, creates a VolumeAttachment CRD and returns the device path
+func (c *FlexvolumeController) attach(attachOpts AttachOptions) (string, error) {
+
+	logger.Infof("Attaching volume %s/%s", attachOpts.Pool, attachOpts.Image)
 	namespace := os.Getenv(k8sutil.PodNamespaceEnvVar)
 	node := os.Getenv(k8sutil.NodeNameEnvVar)
 
@@ -96,7 +165,7 @@ func (c *FlexvolumeController) Attach(attachOpts AttachOptions, devicePath *stri
 	volumeattachObj, err := c.volumeAttachmentController.Get(namespace, crdName)
 	if err != nil {
 		if !errors.IsNotFound(err) {
-			return fmt.Errorf("failed to get volume CRD %s. %+v", crdName, err)
+			return "", fmt.Errorf("failed to get volume CRD %s. %+v", crdName, err)
 		}
 		// No volumeattach CRD for this volume found. Create one
 		volumeattachObj = crd.NewVolumeAttachment(crdName, namespace, node, attachOpts.PodNamespace, attachOpts.Pod,
@@ -105,10 +174,10 @@ func (c *FlexvolumeController) Attach(attachOpts AttachOptions, devicePath *stri
 		err = c.volumeAttachmentController.Create(volumeattachObj)
 		if err != nil {
 			if !errors.IsAlreadyExists(err) {
-				return fmt.Errorf("failed to create volume CRD %s. %+v", crdName, err)
+				return "", fmt.Errorf("failed to create volume CRD %s. %+v", crdName, err)
 			}
 			// Some other attacher beat us in this race. Kubernetes will retry again.
-			return fmt.Errorf("failed to attach volume %s. Volume is already attached by a different pod", crdName)
+			return "", fmt.Errorf("failed to attach volume %s. Volume is already attached by a different pod", crdName)
 		}
 	} else {
 		// Volume has already been attached.
@@ -120,7 +189,7 @@ func (c *FlexvolumeController) Attach(attachOpts AttachOptions, devicePath *stri
 			pod, err := c.clientset.Core().Pods(attachment.PodNamespace).Get(attachment.PodName, metav1.GetOptions{})
 			if err != nil {
 				if !errors.IsNotFound(err) {
-					return fmt.Errorf("failed to get pod CRD %s/%s. %+v", attachment.PodNamespace, attachment.PodName, err)
+					return "", fmt.Errorf("failed to get pod CRD %s/%s. %+v", attachment.PodNamespace, attachment.PodName, err)
 				}
 
 				// Attachment is orphaned. Update attachment record and proceed with attaching
@@ -131,17 +200,17 @@ func (c *FlexvolumeController) Attach(attachOpts AttachOptions, devicePath *stri
 				attachment.ReadOnly = attachOpts.RW == ReadOnly
 				err = c.volumeAttachmentController.Update(volumeattachObj)
 				if err != nil {
-					return fmt.Errorf("failed to update volume CRD %s. %+v", crdName, err)
+					return "", fmt.Errorf("failed to update volume CRD %s. %+v", crdName, err)
 				}
 			} else {
 				// Attachment is not orphaned. Original pod still exists. Dont attach.
-				return fmt.Errorf("failed to attach volume %s. Volume is already attached by pod %s/%s. Status %+v", crdName, attachment.PodNamespace, attachment.PodName, pod.Status.Phase)
+				return "", fmt.Errorf("failed to attach volume %s. Volume is already attached by pod %s/%s. Status %+v", crdName, attachment.PodNamespace, attachment.PodName, pod.Status.Phase)
 			}
 		} else {
 			// No RW attachment found. Check if this is a RW attachment request.
 			// We only support RW once attachment. No mixing either with RO
 			if attachOpts.RW == "rw" && len(volumeattachObj.Attachments) > 0 {
-				return fmt.Errorf("failed to attach volume %s. Volume is already attached by one or more pods", crdName)
+				return "", fmt.Errorf("failed to attach volume %s. Volume is already attached by one or more pods", crdName)
 			}
 
 		}
@@ -166,28 +235,124 @@ func (c *FlexvolumeController) Attach(attachOpts AttachOptions, devicePath *stri
 			volumeattachObj.Attachments = append(volumeattachObj.Attachments, newAttach)
 			err = c.volumeAttachmentController.Update(volumeattachObj)
 			if err != nil {
-				return fmt.Errorf("failed to update volume CRD %s. %+v", crdName, err)
+				return "", fmt.Errorf("failed to update volume CRD %s. %+v", crdName, err)
 			}
 		}
 	}
-	*devicePath, err = c.volumeManager.Attach(attachOpts.Image, attachOpts.Pool, attachOpts.ClusterName)
+	devicePath, err := c.volumeManager.Attach(attachOpts.Image, attachOpts.Pool, attachOpts.ClusterName)
 	if err != nil {
-		return fmt.Errorf("failed to attach volume %s/%s: %+v", attachOpts.Pool, attachOpts.Image, err)
+		return "", fmt.Errorf("failed to attach volume %s/%s: %+v", attachOpts.Pool, attachOpts.Image, err)
+	}
+
+	return devicePath, nil
+}
+
+// mountDevice mounts the volume device path to a global mount in the host
+func (c *FlexvolumeController) mountDevice(opts AttachOptions, devicePath string) error {
+
+	globalVolumeMountPath := getGlobalMountPath(opts.VolumeName)
+	logger.Infof("Mounting volume %s/%s at global mount path %s to %s", opts.Pool, opts.Image, globalVolumeMountPath, opts.MountDir)
+
+	notMnt, err := c.mounter.Interface.IsLikelyNotMountPoint(globalVolumeMountPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if err := os.MkdirAll(globalVolumeMountPath, 0750); err != nil {
+				return fmt.Errorf("cannot create global volume mount path dir %s: %v", globalVolumeMountPath, err)
+			}
+			notMnt = true
+		} else {
+			return fmt.Errorf("error checking if %s is a mount point: %v", globalVolumeMountPath, err)
+		}
+	}
+	options := []string{opts.RW}
+	if notMnt {
+		if err = c.mounter.FormatAndMount(devicePath, globalVolumeMountPath, opts.FsType, options); err != nil {
+			os.Remove(globalVolumeMountPath)
+			return fmt.Errorf("failed to mount volume at device path %s [%s] to %s, error %v", devicePath, opts.FsType, globalVolumeMountPath, err)
+		}
+		logger.Info("Ignore error about Mount failed: exit status 32. Kubernetes does this to check whether the volume has been formatted. It will format and retry again. https://github.com/kubernetes/kubernetes/blob/release-1.7/pkg/util/mount/mount_linux.go#L360")
+		logger.Infof("formatting volume %v devicePath %v deviceMountPath %v fs %v with options %+v", opts.VolumeName, devicePath, globalVolumeMountPath, opts.FsType, options)
+	}
+	return nil
+}
+
+// mount mounts the global mount to the expected mountDir in the host
+func (c *FlexvolumeController) mount(opts AttachOptions) error {
+
+	globalVolumeMountPath := getGlobalMountPath(opts.VolumeName)
+	logger.Infof("Mounting volume %s/%s at global mount path %s to %s", opts.Pool, opts.Image, globalVolumeMountPath, opts.MountDir)
+
+	// Perform a bind mount to the full path to allow duplicate mounts of the same volume. This is only supported for RO attachments.
+	options := append([]string{opts.RW}, "bind")
+	err := c.mounter.Interface.Mount(globalVolumeMountPath, opts.MountDir, "", options)
+	if err != nil {
+		notMnt, mntErr := c.mounter.Interface.IsLikelyNotMountPoint(opts.MountDir)
+		if mntErr != nil {
+			return fmt.Errorf("IsLikelyNotMountPoint check failed on %s: %v", opts.MountDir, mntErr)
+		}
+		if !notMnt {
+			if mntErr = c.mounter.Interface.Unmount(opts.MountDir); mntErr != nil {
+				return fmt.Errorf("failed to unmount %s: %v", opts.MountDir, mntErr)
+			}
+			notMnt, mntErr := c.mounter.Interface.IsLikelyNotMountPoint(opts.MountDir)
+			if mntErr != nil {
+				return fmt.Errorf("IsLikelyNotMountPoint check failed on %s: %v", opts.MountDir, mntErr)
+			}
+			if !notMnt {
+				// This is very odd, we don't expect it.  We'll try again next sync loop.
+				return fmt.Errorf("%s is still mounted, despite call to unmount().  Will try again next sync loop", opts.MountDir)
+			}
+		}
+		os.Remove(opts.MountDir)
+		return fmt.Errorf("failed to mount volume %s/%s at global mount path %s to %s, error %v", opts.Pool, opts.Image, globalVolumeMountPath, opts.MountDir, err)
+	}
+
+	logger.Infof("volume %s/%s has been attached and mounted to %s", opts.Pool, opts.Image, opts.MountDir)
+	return nil
+}
+
+// unmount the mountDir
+func (c *FlexvolumeController) unmount(opts AttachOptions) error {
+
+	logger.Infof("Unmounting volume %s/%s at %s", opts.Pool, opts.Image, opts.MountDir)
+
+	// Unmount pod mount dir
+	if err := util.UnmountPath(opts.MountDir, c.mounter.Interface); err != nil {
+		return fmt.Errorf("failed to unmount volume at %s: %+v", opts.MountDir, err)
+	}
+
+	// Remove attachment item from the CRD
+	if err := c.removeAttachmentObject(opts); err != nil {
+		return fmt.Errorf("failed to remove attachment item from CRD for mount dir %s: %+v", opts.MountDir, err)
 	}
 
 	return nil
 }
 
-// Detach detaches a rook volume to the node
-func (c *FlexvolumeController) Detach(detachOpts AttachOptions, _ *struct{} /* void reply */) error {
+// unmountDevice unmounts the global mount path from the host
+func (c *FlexvolumeController) unmountDevice(opts AttachOptions) error {
 
-	err := c.volumeManager.Detach(detachOpts.Image, detachOpts.Pool, detachOpts.ClusterName)
-	if err != nil {
-		return fmt.Errorf("Failed to detach volume %s/%s: %+v", detachOpts.Pool, detachOpts.Image, err)
+	globalVolumeMountPath := getGlobalMountPath(opts.VolumeName)
+	logger.Infof("Unmounting volume %s/%s at global mount path %s", opts.Pool, opts.Image, globalVolumeMountPath)
+
+	if err := util.UnmountPath(globalVolumeMountPath, c.mounter.Interface); err != nil {
+		return fmt.Errorf("failed to unmount volume at %s: %+v", globalVolumeMountPath, err)
 	}
 
+	return nil
+}
+
+// detach detaches the volume from the node
+func (c *FlexvolumeController) detach(opts AttachOptions) error {
+
+	err := c.volumeManager.Detach(opts.Image, opts.Pool, opts.ClusterName)
+	if err != nil {
+		return fmt.Errorf("failed to detach volume %s/%s: %+v", opts.Pool, opts.Image, err)
+	}
+
+	// Volume detached. Delete CRD is volume is no longer attached to any node.
 	namespace := os.Getenv(k8sutil.PodNamespaceEnvVar)
-	crdName := detachOpts.VolumeName
+	crdName := opts.VolumeName
 	volumeAttach, err := c.volumeAttachmentController.Get(namespace, crdName)
 	if len(volumeAttach.Attachments) == 0 {
 		logger.Infof("Deleting VolumeAttachment CRD %s/%s", namespace, crdName)
@@ -196,8 +361,8 @@ func (c *FlexvolumeController) Detach(detachOpts AttachOptions, _ *struct{} /* v
 	return nil
 }
 
-// RemoveAttachmentObject removes the attachment from the VolumeAttachment CRD
-func (c *FlexvolumeController) RemoveAttachmentObject(detachOpts AttachOptions, _ *struct{} /* void reply */) error {
+// removeAttachmentObject removes the attachment from the VolumeAttachment CRD
+func (c *FlexvolumeController) removeAttachmentObject(detachOpts AttachOptions) error {
 	namespace := os.Getenv(k8sutil.PodNamespaceEnvVar)
 	crdName := detachOpts.VolumeName
 	logger.Infof("Deleting attachment for mountDir %s from Volume attach CRD %s/%s", detachOpts.MountDir, namespace, crdName)
@@ -217,16 +382,6 @@ func (c *FlexvolumeController) RemoveAttachmentObject(detachOpts AttachOptions, 
 	return fmt.Errorf("VolumeAttachment CRD %s found but attachment to the mountDir %s was not found", crdName, detachOpts.MountDir)
 }
 
-// Log logs messages from the driver
-func (c *FlexvolumeController) Log(message LogMessage, _ *struct{} /* void reply */) error {
-	if message.IsError {
-		driverLogger.Error(message.Message)
-	} else {
-		driverLogger.Info(message.Message)
-	}
-	return nil
-}
-
 func (c *FlexvolumeController) parseClusterName(storageClassName string) (string, error) {
 	sc, err := c.clientset.Storage().StorageClasses().Get(storageClassName, metav1.GetOptions{})
 	if err != nil {
@@ -241,13 +396,13 @@ func (c *FlexvolumeController) parseClusterName(storageClassName string) (string
 	return clusterName, nil
 }
 
-// GetAttachInfoFromMountDir obtain pod and volume information from the mountDir. K8s does not provide
+// getAttachInfoFromMountDir obtain pod and volume information from the mountDir. K8s does not provide
 // all necessary information to detach a volume (https://github.com/kubernetes/kubernetes/issues/52590).
 // So we are hacking a bit and by parsing it from mountDir
-func (c *FlexvolumeController) GetAttachInfoFromMountDir(mountDir string, attachOptions *AttachOptions) error {
+func (c *FlexvolumeController) getAttachInfoFromMountDir(attachOptions *AttachOptions) error {
 
 	if attachOptions.PodID == "" {
-		podID, pvName, err := getPodAndPVNameFromMountDir(mountDir)
+		podID, pvName, err := getPodAndPVNameFromMountDir(attachOptions.MountDir)
 		if err != nil {
 			return err
 		}
@@ -298,37 +453,11 @@ func (c *FlexvolumeController) GetAttachInfoFromMountDir(mountDir string, attach
 	return nil
 }
 
-// GetGlobalMountPath generate the global mount path where the device path is mounted.
+// getGlobalMountPath generate the global mount path where the device path is mounted.
 // It is based on the kubelet root dir, which defaults to /var/lib/kubelet
-func (c *FlexvolumeController) GetGlobalMountPath(volumeName string, globalMountPath *string) error {
-	*globalMountPath = path.Join(c.getKubeletRootDir(), "plugins", FlexvolumeVendor, FlexvolumeDriver, "mounts", volumeName)
-	return nil
-}
-
-// getKubeletRootDir queries the kubelet configuration to find the kubelet root dir. Defaults to /var/lib/kubelet
-func (c *FlexvolumeController) getKubeletRootDir() string {
-	nodeConfigURI, err := k8sutil.NodeConfigURI()
-	if err != nil {
-		logger.Warningf(err.Error())
-		return kubeletDefaultRootDir
-	}
-
-	// determining where the path of the kubelet root dir and flexvolume dir on the node
-	nodeConfig, err := c.clientset.Core().RESTClient().Get().RequestURI(nodeConfigURI).DoRaw()
-	if err != nil {
-		logger.Warningf("unable to query node configuration: %v", err)
-		return kubeletDefaultRootDir
-	}
-	configKubelet := agent.NodeConfigKubelet{}
-	if err := json.Unmarshal(nodeConfig, &configKubelet); err != nil {
-		logger.Warningf("unable to parse node config from Kubelet: %+v", err)
-		return kubeletDefaultRootDir
-	}
-
-	if configKubelet.ComponentConfig.RootDirectory == "" {
-		return kubeletDefaultRootDir
-	}
-	return configKubelet.ComponentConfig.RootDirectory
+func getGlobalMountPath(volumeName string) string {
+	kubeletRootDir := os.Getenv(k8sutil.KubeletRootDirPathDirEnv)
+	return path.Join(kubeletRootDir, "plugins", FlexvolumeVendor, FlexvolumeDriver, "mounts", volumeName)
 }
 
 // getPodAndPVNameFromMountDir parses pod information from the mountDir
